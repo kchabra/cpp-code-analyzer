@@ -1,97 +1,117 @@
 const express = require('express');
 const bodyParser = require('body-parser');
+const axios = require('axios');
 const app = express();
-require('dotenv').config(); 
+require('dotenv').config();
 
+// Setup middleware
 app.use(express.static('public'));
 app.use(bodyParser.json());
+
+// Function to analyze code
+async function callOpenAI(prompt) {
+    try {
+        const response = await axios.post(
+            "https://api.openai.com/v1/chat/completions",
+            {
+                model: "gpt-3.5-turbo",
+                messages: [{ role: "user", content: prompt }],
+                temperature: 0.7,
+            },
+            {
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+                },
+            }
+        );
+        return response.data.choices[0].message.content;
+    } catch (error) {
+        console.error("Error:", error.response?.data || error.message);
+        throw new Error("Analysis failed");
+    }
+}
+
+// Extract flowchart data
+function extractMermaidCode(response) {
+    const mermaidMatch = response.match(/```mermaid\s*([\s\S]*?)\s*```/);
+    if (mermaidMatch && mermaidMatch[1]) {
+        return mermaidMatch[1].trim();
+    }
+    return null;
+}
 
 app.get('/', (req, res) => {
     res.sendFile(__dirname + '/views/index.html');
 });
 
 app.post('/analyze', async (req, res) => {
-    const codeSnippet = req.body.code.trim();  
+    try {
+        const { code, explanationType, visualOutput } = req.body;
 
-    // Hardcoded C++ code examples
-    const example1 = `#include <iostream>
-using namespace std;
-
-int main() {
-    int a, b, sum;
-    cout << "Enter two numbers: ";
-    cin >> a >> b;
-    sum = a + b;
-    cout << "Sum: " << sum << endl;
-    return 0;
-}`;
-
-    const example2 = `#include <iostream>
-using namespace std;
-
-bool isPalindrome(string str) {
-    int n = str.length();
-    for (int i = 0; i < n / 2; i++) {
-        if (str[i] != str[n - i - 1]) {
-            return false;
+        if (!code) {
+            return res.status(400).json({ error: 'Code is required' });
         }
+
+        const validationPrompt = `Validate if input is C++ code with proper syntax elements. Return only true/false.
+
+Input:
+${code}`;
+
+        const isValidCode = await callOpenAI(validationPrompt);
+        
+        if (isValidCode.trim().toLowerCase() !== 'true') {
+            return res.json({ 
+                analysis: "<h3>Invalid Input</h3><p>The provided input does not appear to be C++ code. Please submit valid C++ code for analysis.</p>",
+                visualAnalysis: ''
+            });
+        }
+
+        let prompt = `Analyze this C++ code:\n\n${code}\n\n`;
+        
+        if (explanationType === 'high') {
+            prompt += `Provide high-level HTML analysis with:
+            - Main purpose heading
+            - Purpose and functionality
+            - Components and roles
+            - Algorithms used
+            - Potential improvements`;
+        } else {
+            prompt += `Provide detailed HTML analysis with:
+            - Code title heading
+            - Line by line explanation
+            - Variables and methods
+            - Control flow
+            - Complexity analysis
+            - Best practices`;
+        }
+
+        const analysisResponse = await callOpenAI(prompt);
+        let analysis = analysisResponse;
+        let visualAnalysis = '';
+
+        if (visualOutput === true) {
+            const visualPrompt = `Create flowchart for this C++ code using mermaid.js syntax. Include start/end nodes, method calls, and decision points.
+
+Code:
+${code}`;
+            
+            const visualResponse = await callOpenAI(visualPrompt);
+            const mermaidCode = extractMermaidCode(visualResponse);
+            
+            if (mermaidCode) {
+                visualAnalysis = mermaidCode;
+            } else {
+                console.error('Failed to generate flowchart');
+                visualAnalysis = '';
+            }
+        }
+
+        res.json({ analysis, visualAnalysis });
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).json({ error: 'Analysis failed' });
     }
-    return true;
-}
-
-int main() {
-    string str;
-    cout << "Enter a string: ";
-    cin >> str;
-
-    if (isPalindrome(str)) {
-        cout << "The string is a palindrome." << endl;
-    } else {
-        cout << "The string is not a palindrome." << endl;
-    }
-    return 0;
-}`;
-
-    // Hardcoded detailed analysis
-    let analysis;
-    if (codeSnippet === example1) {
-        analysis = `
-        **Time Complexity**: O(1) (constant time complexity as there are no loops).
-        
-        **Purpose of Code**: This code is a simple C++ program to add two numbers and print the result.
-        
-        **In-depth Analysis**:
-        - The program starts by declaring three integers: \`a\`, \`b\`, and \`sum\`.
-        - It prompts the user to input two numbers using \`cin\`, and then computes their sum.
-        - The sum is stored in the variable \`sum\` and is output using \`cout\`.
-        - The program then returns 0, indicating successful completion.
-        
-        **Suggestions for Improvement**:
-        - Add input validation to ensure the user enters valid numbers.
-        - Consider using functions to make the code modular for adding multiple numbers.
-        `;
-    } else if (codeSnippet === example2) {
-        analysis = `
-        **Time Complexity**: O(n) (where n is the length of the string).
-        
-        **Purpose of Code**: This code checks whether a given string is a palindrome (i.e., it reads the same forwards and backwards).
-        
-        **In-depth Analysis**:
-        - The function \`isPalindrome\` takes a string as input and compares the characters from the start and end of the string moving toward the center.
-        - If any characters don't match, the function returns false, indicating the string is not a palindrome.
-        - If all characters match, the function returns true.
-        - In the \`main\` function, the user is prompted to enter a string, which is checked using the \`isPalindrome\` function.
-        - The result is printed to the console, either confirming that the string is a palindrome or not.
-        
-        **Suggestions for Improvement**:
-        - Handle edge cases, such as empty strings or single character strings.
-        - Improve efficiency by considering case-insensitive comparisons or ignoring spaces in the string.
-        `;
-    } else {
-        analysis = "Failed to analyze the code.";
-    }
-
-    res.json({ analysis });
 });
 
 const PORT = 3000;
